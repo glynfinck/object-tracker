@@ -1,0 +1,30 @@
+<!--
+  Launch trashbot AI and relevant nodes
+-->
+
+<launch>
+
+  <!-- Trashbot AI node -->
+  <node name="object_tracker" pkg="object_tracker" type="object_tracker_v2.py" output="screen"/>
+
+
+  <!-- USB camera node
+  <node name="usb_cam" pkg="usb_cam" type="usb_cam_node" output="screen" >
+    <param name="video_device" value="/dev/video1" />
+    <param name="image_width" value="640" />
+    <param name="image_height" value="480" />
+    <param name="pixel_format" value="yuyv" />
+    <param name="camera_frame_id" value="usb_cam" />
+    <param name="io_method" value="mmap"/>
+  </node> -->
+
+  <!-- Webcam camera node
+  <node name="webcam" pkg="webcam" type="webcam.py" output="screen"/> -->
+  
+  <!-- Darknet node -->
+  <!-- <include file="$(find darknet_ros)/launch/darknet_ros.launch"/> -->
+  
+  <!-- Realsense Camera Node -->
+  <include file="$(find realsense2_camera)/launch/rs_camera.launch" />
+
+</launch>
