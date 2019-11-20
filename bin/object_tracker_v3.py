@@ -11,16 +11,14 @@ import concurrent.futures
 from std_msgs.msg import String
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge, CvBridgeError
-from darknet_ros_msgs.msg import BoundingBoxes, BoundingBox
+from darknet_ros_msgs.msg import BoundingBoxes, _BoundingBoxes
 
-IMAGE_TOPIC = "/camera/color/image_raw"
+# Initialze global constants
+IMAGE_TOPIC = "/camera/color/image_raw" 
 
 class Tracker:
 
     def __init__(self):
-        # Initialze global constants
-        self.duration = 0.5 # Will get a new bbox every BBOX_REFRESH seconds
-
         # Set up ros nodes, publishers, subsribers
         rospy.init_node('object_tracker', anonymous=True)
         self.bridge = CvBridge()
@@ -29,7 +27,6 @@ class Tracker:
         tracker_types = ['BOOSTING', 'MIL','KCF', 'TLD', 'MEDIANFLOW', 'CSRT', 'MOSSE']
         self.tracker_type = tracker_types[6]
 
-        self.tracker_pub = rospy.Publisher('object_tracker/bounding_box',BoundingBox)
         self.start_tracking()
 
     def create_tracker(self,tracker_type):
@@ -51,11 +48,17 @@ class Tracker:
         
 
 
-    def track(self,frame,bbox,duration,bbox_msg):
+    def track(self,frame,bbox):
         start = time.time()
+        print("Tracking bottle...")
         tracker = self.create_tracker(self.tracker_type)
         tracker.init(frame,bbox)
-        while(time.time() - start < self.duration):
+        bottle_loc = bbox
+        while(bottle_loc == bbox):
+            bboxes = rospy.wait_for_message('/darknet_ros/bounding_boxes', BoundingBoxes).bounding_boxes
+            bottle = next(iter(list(filter(lambda bbox: bbox.Class == "bottle",bboxes))),None)
+            if bottle:
+                bbox = (bottle.xmin, bottle.ymin, bottle.xmax-bottle.xmin, bottle.ymax-bottle.ymin)
             # Read a new frame
             frame = self.bridge.imgmsg_to_cv2(rospy.wait_for_message(IMAGE_TOPIC, Image),'bgr8')
             
@@ -64,15 +67,7 @@ class Tracker:
     
             # Update tracker
             ok, bbox = tracker.update(frame)
-            new_bbox_msg = BoundingBox()
-            new_bbox_msg.probability = bbox_msg.probability
-            new_bbox_msg.xmin = bbox[0]
-            new_bbox_msg.ymin = bbox[1]
-            new_bbox_msg.xmax = bbox[0] + bbox[2]
-            new_bbox_msg.ymax = bbox[1] + bbox[3]
-            new_bbox_msg.id = bbox_msg.id
-            new_bbox_msg.Class = bbox_msg.Class
-            self.tracker_pub.publish(new_bbox_msg)
+
             if not ok:
                 break
     
@@ -102,16 +97,19 @@ class Tracker:
             k = cv2.waitKey(1) & 0xff
             if k == 27 : break
 
+        print("Done tracking bottle")
     
     def start_tracking(self):
         
         while(True):
             bboxes = rospy.wait_for_message('/darknet_ros/bounding_boxes', BoundingBoxes).bounding_boxes
             bottle = next(iter(list(filter(lambda bbox: bbox.Class == "bottle",bboxes))),None)
+            print(bottle)
             if bottle != None:
+                print("I see a bottle!")
                 bbox = (bottle.xmin, bottle.ymin, bottle.xmax-bottle.xmin, bottle.ymax-bottle.ymin)
                 frame = self.bridge.imgmsg_to_cv2(rospy.wait_for_message(IMAGE_TOPIC, Image),'bgr8')
-                self.track(frame,bbox,self.duration,bottle)
+                self.track(frame,bbox)
         
 def main(args):
     tracker = Tracker()
