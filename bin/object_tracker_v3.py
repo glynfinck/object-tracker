@@ -6,29 +6,38 @@ roslib.load_manifest('object_tracker')
 import sys
 import rospy
 import cv2
-import time
-import concurrent.futures
 from std_msgs.msg import String
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge, CvBridgeError
-from darknet_ros_msgs.msg import BoundingBoxes, _BoundingBoxes
+from darknet_ros_msgs.msg import BoundingBoxes
+from geometry_msgs.msg import Pose
 
-# Initialze global constants
-IMAGE_TOPIC = "/camera/color/image_raw" 
+IMAGE_TOPIC = "/camera/color/image_raw"
+WIDTH_TO_DEPTH_CONVERSION_FACTOR = 1.0
+DEPTH_TO_XPOS_CONVERSION_FACTOR = 1.0
+DEPTH_TO_YPOS_CONVERSION_FACTOR = 1.0
 
-class Tracker:
+class image_converter:
 
     def __init__(self):
+        # Initialze global constants
+        self.duration = 3.0 # Will get a new bbox every BBOX_REFRESH seconds
+
         # Set up ros nodes, publishers, subsribers
-        rospy.init_node('object_tracker', anonymous=True)
         self.bridge = CvBridge()
 
         # Initialize the tracker
         tracker_types = ['BOOSTING', 'MIL','KCF', 'TLD', 'MEDIANFLOW', 'CSRT', 'MOSSE']
         self.tracker_type = tracker_types[6]
 
-        self.start_tracking()
-
+        self.tracker_pub = rospy.Publisher('/object_tracker/pose',Pose)
+        self.bottle_sub = rospy.Subscriber('/darknet_ros/bounding_boxes',BoundingBoxes,self.bbox_callback)
+        self.image_sub = rospy.Subscriber(IMAGE_TOPIC,Image,self.image_callback)
+        self.curr_dark_bbox = None
+        self.prev_dark_bbox = None
+        self.bbox = None
+        self.tracker = self.create_tracker(self.tracker_type)
+    
     def create_tracker(self,tracker_type):
         if self.tracker_type == 'BOOSTING':
             ret = cv2.TrackerBoosting_create()
@@ -45,75 +54,76 @@ class Tracker:
         if self.tracker_type == 'MOSSE':
             ret = cv2.TrackerMOSSE_create()
         return ret
-        
 
+    def bbox_callback(self,data):
+        bboxes = data.bounding_boxes
+        bottle = next(iter(list(filter(lambda bbox: bbox.Class == "bottle",bboxes))),None)
+        if bottle:
+            self.curr_dark_bbox = (bottle.xmin, bottle.ymin, bottle.xmax-bottle.xmin, bottle.ymax-bottle.ymin)
 
-    def track(self,frame,bbox):
-        start = time.time()
-        print("Tracking bottle...")
-        tracker = self.create_tracker(self.tracker_type)
-        tracker.init(frame,bbox)
-        bottle_loc = bbox
-        while(bottle_loc == bbox):
-            bboxes = rospy.wait_for_message('/darknet_ros/bounding_boxes', BoundingBoxes).bounding_boxes
-            bottle = next(iter(list(filter(lambda bbox: bbox.Class == "bottle",bboxes))),None)
-            if bottle:
-                bbox = (bottle.xmin, bottle.ymin, bottle.xmax-bottle.xmin, bottle.ymax-bottle.ymin)
-            # Read a new frame
-            frame = self.bridge.imgmsg_to_cv2(rospy.wait_for_message(IMAGE_TOPIC, Image),'bgr8')
+    def image_callback(self,data):
+        try:
+            frame = self.bridge.imgmsg_to_cv2(data, "bgr8")
+        except CvBridgeError as e:
+            print(e)
+
+        if self.curr_dark_bbox:
+            if (not self.prev_dark_bbox) or (self.prev_dark_bbox != self.curr_dark_bbox):
+                self.prev_dark_bbox = self.curr_dark_bbox
+                self.tracker = self.create_tracker(self.tracker_type)
+                self.tracker.init(frame,self.curr_dark_bbox)
             
             # Start timer
             timer = cv2.getTickCount()
-    
+
             # Update tracker
-            ok, bbox = tracker.update(frame)
+            ok, self.bbox = self.tracker.update(frame)
 
-            if not ok:
-                break
-    
-            # Calculate Frames per second (FPS)
-            fps = cv2.getTickFrequency() / (cv2.getTickCount() - timer)
-    
-            # Draw bounding box
             if ok:
-                # Tracking success
-                p1 = (int(bbox[0]), int(bbox[1]))
-                p2 = (int(bbox[0] + bbox[2]), int(bbox[1] + bbox[3]))
-                cv2.rectangle(frame, p1, p2, (255,0,0), 2, 1)
-            else :
-                # Tracking failure
-                cv2.putText(frame, "Tracking failure detected", (100,80), cv2.FONT_HERSHEY_SIMPLEX, 0.75,(0,0,255),2)
-    
-            # Display tracker type on frame
-            cv2.putText(frame, self.tracker_type + " Tracker", (100,20), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (50,170,50),2);
-        
-            # Display FPS on frame
-            cv2.putText(frame, "FPS : " + str(int(fps)), (100,50), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (50,170,50), 2);
-    
-            # Display result
-            cv2.imshow("Tracking", frame)
-    
-            # Exit if ESC pressed
-            k = cv2.waitKey(1) & 0xff
-            if k == 27 : break
+                if self.bbox[2] != 0:
+                    zloc = WIDTH_TO_DEPTH_CONVERSION_FACTOR/self.bbox[2]
+                    xprime = float(self.bbox[2]/2.0) + float(self.bbox[0])
+                    yprime = float(self.bbox[3]/2.0) + float(self.bbox[1])
+                    xloc = DEPTH_TO_XPOS_CONVERSION_FACTOR*zloc*xprime
+                    yloc = DEPTH_TO_YPOS_CONVERSION_FACTOR*zloc*yprime
 
-        print("Done tracking bottle")
-    
-    def start_tracking(self):
-        
-        while(True):
-            bboxes = rospy.wait_for_message('/darknet_ros/bounding_boxes', BoundingBoxes).bounding_boxes
-            bottle = next(iter(list(filter(lambda bbox: bbox.Class == "bottle",bboxes))),None)
-            print(bottle)
-            if bottle != None:
-                print("I see a bottle!")
-                bbox = (bottle.xmin, bottle.ymin, bottle.xmax-bottle.xmin, bottle.ymax-bottle.ymin)
-                frame = self.bridge.imgmsg_to_cv2(rospy.wait_for_message(IMAGE_TOPIC, Image),'bgr8')
-                self.track(frame,bbox)
-        
+                    new_pose_stamp = Pose()
+                    new_pose_stamp.position.x = xloc
+                    new_pose_stamp.position.y = yloc
+                    new_pose_stamp.position.z = zloc
+
+                    self.tracker_pub.publish(new_pose_stamp)
+
+                # Calculate Frames per second (FPS)
+                fps = cv2.getTickFrequency() / (cv2.getTickCount() - timer)
+
+                # Draw bounding box
+                if ok:
+                    # Tracking success
+                    p1 = (int(self.bbox[0]), int(self.bbox[1]))
+                    p2 = (int(self.bbox[0] + self.bbox[2]), int(self.bbox[1] + self.bbox[3]))
+                    cv2.rectangle(frame, p1, p2, (255,0,0), 2, 1)
+                else :
+                    # Tracking failure
+                    cv2.putText(frame, "Tracking failure detected", (100,80), cv2.FONT_HERSHEY_SIMPLEX, 0.75,(0,0,255),2)
+
+                # Display tracker type on frame
+                cv2.putText(frame, self.tracker_type + " Tracker", (100,20), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (50,170,50),2)
+            
+                # Display FPS on frame
+                cv2.putText(frame, "FPS : " + str(int(fps)), (100,50), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (50,170,50), 2)
+
+        cv2.imshow("Object Tracker", frame)
+        cv2.waitKey(3)
+
 def main(args):
-    tracker = Tracker()
-    
+    ic = image_converter()
+    rospy.init_node('object_tracker', anonymous=True)
+    try:
+        rospy.spin()
+    except KeyboardInterrupt:
+        print("Shutting down")
+    cv2.destroyAllWindows()
 
 if __name__ == '__main__':
     main(sys.argv)
