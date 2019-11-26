@@ -16,6 +16,8 @@ IMAGE_TOPIC = "/camera/color/image_raw"
 WIDTH_TO_DEPTH_CONVERSION_FACTOR = 1.0
 DEPTH_TO_XPOS_CONVERSION_FACTOR = 1.0
 DEPTH_TO_YPOS_CONVERSION_FACTOR = 1.0
+IMG_WIDTH = 640.0
+IMG_HEIGHT = 480.0
 
 class image_converter:
 
@@ -82,10 +84,12 @@ class image_converter:
             if ok:
                 if self.bbox[2] != 0:
                     zloc = WIDTH_TO_DEPTH_CONVERSION_FACTOR/self.bbox[2]
-                    xprime = float(self.bbox[2]/2.0) + float(self.bbox[0])
-                    yprime = float(self.bbox[3]/2.0) + float(self.bbox[1])
+                    xprime = float(self.bbox[2]/2.0) + float(self.bbox[0]) - IMG_WIDTH/2.0
+                    yprime = float(self.bbox[3]/2.0) + float(self.bbox[1]) - IMG_HEIGHT/2.0
                     xloc = DEPTH_TO_XPOS_CONVERSION_FACTOR*zloc*xprime
                     yloc = DEPTH_TO_YPOS_CONVERSION_FACTOR*zloc*yprime
+
+                    print("x: {}\ny: {}\nz: {}".format(xloc,yloc,zloc),"\n\n")
 
                     new_pose_stamp = Pose()
                     new_pose_stamp.position.x = xloc
